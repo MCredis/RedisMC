@@ -45,4 +45,19 @@ public class Namespace implements KeyValueStore {
     public boolean delete(String key) {
         return store.delete(prefixed(key));
     }
+
+    @Override
+    public long increment(String key, long amount) {
+        return store.increment(prefixed(key), amount);
+    }
+
+    @Override
+    public long decrement(String key, long amount) {
+        return store.decrement(prefixed(key), amount);
+    }
+
+    @Override
+    public boolean compareAndSet(String key, Object expected, Object newValue) {
+        return store.compareAndSet(prefixed(key), expected, newValue);
+    }
 }
