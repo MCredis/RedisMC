@@ -60,4 +60,19 @@ public class Namespace implements KeyValueStore {
     public boolean compareAndSet(String key, Object expected, Object newValue) {
         return store.compareAndSet(prefixed(key), expected, newValue);
     }
+
+    @Override
+    public void hset(String key, String field, Object value) {
+        store.hset(prefixed(key), field, value);
+    }
+
+    @Override
+    public void hset(String key, String field, Object value, long ttl, TimeUnit unit) {
+        store.hset(prefixed(key), field, value, ttl, unit);
+    }
+
+    @Override
+    public Optional<Object> hget(String key, String field) {
+        return store.hget(prefixed(key), field);
+    }
 }

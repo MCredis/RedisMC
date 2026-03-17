@@ -11,19 +11,25 @@ import java.util.concurrent.TimeUnit;
  * In-memory implementation of {@link KeyValueStore} backed by a
  * {@link ConcurrentHashMap}.
  *
- * <p>Thread safety strategy:
+ * <p><b>Thread safety strategy:</b>
  * <ul>
  *   <li>Plain reads and writes use {@code ConcurrentHashMap}'s own segment-level
  *       locking — no global monitor needed.</li>
- *   <li>Compound operations (increment, decrement, compareAndSet, TTL set) use
- *       {@link ConcurrentHashMap#compute} so the read-modify-write is atomic
+ *   <li>Compound operations (increment, decrement, compareAndSet, TTL set, hset)
+ *       use {@link ConcurrentHashMap#compute} so the read-modify-write is atomic
  *       under the same per-bucket lock, without blocking the whole map.</li>
  *   <li>TTL expiry uses {@link ConcurrentHashMap#remove(Object, Object)}, which
  *       atomically removes the entry only when it still holds the exact reference
  *       captured at scheduling time — preventing a stale task from evicting a
  *       key that was overwritten before the TTL fired.</li>
  * </ul>
- * </p>
+ *
+ * <p><b>Hash storage layout:</b>
+ * Hash values are stored as a {@link ConcurrentHashMap}{@code <String, Object>}
+ * held inside a {@link TtlEntry}, exactly like any other value. The logical
+ * structure is therefore {@code Map<String, Map<String, Object>>} — the outer
+ * map is the main store keyed by the hash key, and the inner map holds the
+ * fields. TTL is applied to the outer key, expiring all fields at once.</p>
  *
  * <p>Call {@link #shutdown()} when the store is no longer needed to release
  * the background scheduler thread.</p>
@@ -49,9 +55,6 @@ public class InMemoryStore implements KeyValueStore {
 
     @Override
     public void set(String key, Object value, long ttl, TimeUnit unit) {
-        // compute() atomically stores the entry and gives us the reference in
-        // one step, so the scheduler always captures the correct TtlEntry even
-        // if another thread is concurrently writing the same key.
         TtlEntry[] ref = new TtlEntry[1];
         store.compute(key, (k, old) -> {
             ref[0] = new TtlEntry(value, unit.toMillis(ttl));
@@ -62,12 +65,10 @@ public class InMemoryStore implements KeyValueStore {
 
     @Override
     public Optional<Object> get(String key) {
-        // compute() makes the expired-check-then-remove atomic, so two
-        // concurrent gets on an expired key can't both see the value.
         Object[] result = new Object[1];
         store.compute(key, (k, entry) -> {
-            if (entry == null)        return null;
-            if (entry.isExpired())    return null; // removes the entry
+            if (entry == null)     return null;
+            if (entry.isExpired()) return null;
             result[0] = entry.getValue();
             return entry;
         });
@@ -114,6 +115,51 @@ public class InMemoryStore implements KeyValueStore {
     }
 
     // -------------------------------------------------------------------------
+    // Hash operations
+    // -------------------------------------------------------------------------
+
+    @Override
+    public void hset(String key, String field, Object value) {
+        store.compute(key, (k, entry) -> {
+            if (entry == null || entry.isExpired()) {
+                // Create a new hash; no TTL.
+                ConcurrentHashMap<String, Object> map = new ConcurrentHashMap<>();
+                map.put(field, value);
+                return new TtlEntry(map);
+            }
+            // Mutate the existing inner map in-place so the outer TtlEntry
+            // (and its TTL) is preserved unchanged.
+            asHash(k, entry).put(field, value);
+            return entry;
+        });
+    }
+
+    @Override
+    public void hset(String key, String field, Object value, long ttl, TimeUnit unit) {
+        TtlEntry[] ref = new TtlEntry[1];
+        store.compute(key, (k, entry) -> {
+            // Carry over existing fields if the key already holds a live hash.
+            ConcurrentHashMap<String, Object> map =
+                    (entry != null && !entry.isExpired()) ? asHash(k, entry) : new ConcurrentHashMap<>();
+            map.put(field, value);
+            ref[0] = new TtlEntry(map, unit.toMillis(ttl));
+            return ref[0];
+        });
+        scheduler.schedule(() -> store.remove(key, ref[0]), ttl, unit);
+    }
+
+    @Override
+    public Optional<Object> hget(String key, String field) {
+        Object[] result = new Object[1];
+        store.compute(key, (k, entry) -> {
+            if (entry == null || entry.isExpired()) return null;
+            result[0] = asHash(k, entry).get(field);
+            return entry;
+        });
+        return Optional.ofNullable(result[0]);
+    }
+
+    // -------------------------------------------------------------------------
     // Namespace factory
     // -------------------------------------------------------------------------
 
@@ -129,10 +175,6 @@ public class InMemoryStore implements KeyValueStore {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Extracts the current long value from an entry, treating absent or expired
-     * entries as {@code 0}. Throws if the stored value is not a {@link Number}.
-     */
     private static long numericValue(String key, TtlEntry entry) {
         if (entry == null || entry.isExpired()) return 0L;
         Object val = entry.getValue();
@@ -141,5 +183,15 @@ public class InMemoryStore implements KeyValueStore {
                     "Key '" + key + "' holds a non-numeric value: " + val.getClass().getSimpleName());
         }
         return ((Number) val).longValue();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ConcurrentHashMap<String, Object> asHash(String key, TtlEntry entry) {
+        Object val = entry.getValue();
+        if (!(val instanceof ConcurrentHashMap)) {
+            throw new IllegalStateException(
+                    "Key '" + key + "' does not hold a hash; cannot use hset/hget on a scalar key");
+        }
+        return (ConcurrentHashMap<String, Object>) val;
     }
 }

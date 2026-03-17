@@ -8,6 +8,10 @@ import java.util.concurrent.TimeUnit;
  */
 public interface KeyValueStore {
 
+    // -------------------------------------------------------------------------
+    // String / scalar operations
+    // -------------------------------------------------------------------------
+
     void set(String key, Object value);
 
     void set(String key, Object value, long ttl, TimeUnit unit);
@@ -41,4 +45,27 @@ public interface KeyValueStore {
      * @return {@code true} if the swap was performed
      */
     boolean compareAndSet(String key, Object expected, Object newValue);
+
+    // -------------------------------------------------------------------------
+    // Hash / map operations
+    // -------------------------------------------------------------------------
+
+    /**
+     * Sets {@code field} within the hash stored at {@code key}.
+     * If no hash exists at {@code key} a new one is created.
+     * Any existing TTL on the key is preserved.
+     */
+    void hset(String key, String field, Object value);
+
+    /**
+     * Sets {@code field} within the hash stored at {@code key} and (re)sets a
+     * TTL on the entire hash key. The TTL applies to all fields in the hash.
+     */
+    void hset(String key, String field, Object value, long ttl, TimeUnit unit);
+
+    /**
+     * Returns the value of {@code field} within the hash stored at {@code key},
+     * or {@link Optional#empty()} if the key or field does not exist (or has expired).
+     */
+    Optional<Object> hget(String key, String field);
 }
