@@ -1,6 +1,7 @@
 package mc.redis.core;
 
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A named partition of the key-value store.
@@ -28,6 +29,11 @@ public class Namespace implements KeyValueStore {
     @Override
     public void set(String key, Object value) {
         store.set(prefixed(key), value);
+    }
+
+    @Override
+    public void set(String key, Object value, long ttl, TimeUnit unit) {
+        store.set(prefixed(key), value, ttl, unit);
     }
 
     @Override

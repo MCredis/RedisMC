@@ -1,32 +1,29 @@
 package mc.redis.core;
 
 /**
- * Wraps a stored value with an optional TTL (time-to-live) expiry timestamp.
+ * Wraps a stored value with an optional TTL expiry timestamp.
+ * {@code expiresAt == -1} means the entry never expires.
  */
-public class TtlEntry {
+class TtlEntry {
 
-    private final String value;
-    private final long expiresAt; // epoch millis, or -1 if no TTL
+    private final Object value;
+    private final long expiresAt; // epoch millis, or -1 for no TTL
 
-    public TtlEntry(String value) {
+    TtlEntry(Object value) {
         this.value = value;
         this.expiresAt = -1;
     }
 
-    public TtlEntry(String value, long ttlMillis) {
+    TtlEntry(Object value, long ttlMillis) {
         this.value = value;
         this.expiresAt = System.currentTimeMillis() + ttlMillis;
     }
 
-    public String getValue() {
+    Object getValue() {
         return value;
     }
 
-    public boolean isExpired() {
-        return expiresAt != -1 && System.currentTimeMillis() > expiresAt;
-    }
-
-    public long getExpiresAt() {
-        return expiresAt;
+    boolean isExpired() {
+        return expiresAt != -1 && System.currentTimeMillis() >= expiresAt;
     }
 }
