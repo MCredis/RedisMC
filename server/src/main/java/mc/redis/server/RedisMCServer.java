@@ -1,72 +1,121 @@
 package mc.redis.server;
 
 import mc.redis.core.InMemoryStore;
-import mc.redis.core.Namespace;
 
-import java.util.concurrent.TimeUnit;
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * Entry point for the redisMC standalone server process.
+ * Entry point for the redisMC standalone server.
+ *
+ * <p>Starts a TCP server on {@value #DEFAULT_PORT}, then runs a self-contained
+ * demo that connects a raw client and exercises every supported command. The
+ * server continues accepting connections after the demo completes.</p>
  */
 public class RedisMCServer {
 
-    public static void main(String[] args) throws InterruptedException {
-        System.out.println("redisMC server starting...");
+    public static final int DEFAULT_PORT = 6380;
 
+    public static void main(String[] args) throws Exception {
         InMemoryStore store = new InMemoryStore();
-        Namespace players = store.namespace("players");
-        Namespace sessions = store.namespace("sessions");
+        ExecutorService clientPool = Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "redismc-client-handler");
+            t.setDaemon(true);
+            return t;
+        });
 
-        // --- basic hset / hget -----------------------------------------------
-        players.hset("steve", "score", 4200);
-        players.hset("steve", "rank",  "diamond");
-        players.hset("steve", "kills", 37);
+        ServerSocket serverSocket = new ServerSocket(DEFAULT_PORT);
 
-        players.hget("steve", "score").ifPresent(v -> System.out.println("steve.score  -> " + v)); // 4200
-        players.hget("steve", "rank").ifPresent(v  -> System.out.println("steve.rank   -> " + v)); // diamond
-        players.hget("steve", "kills").ifPresent(v -> System.out.println("steve.kills  -> " + v)); // 37
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try { serverSocket.close(); } catch (IOException ignored) {}
+            clientPool.shutdown();
+            store.shutdown();
+            System.out.println("redisMC stopped.");
+        }, "redismc-shutdown"));
 
-        // missing field returns empty
-        System.out.println("steve.unknown -> " + players.hget("steve", "unknown")); // Optional.empty
+        // Accept loop runs in a daemon thread so main can continue to the demo.
+        Thread acceptor = new Thread(() -> {
+            try {
+                while (!serverSocket.isClosed()) {
+                    Socket conn = serverSocket.accept();
+                    clientPool.submit(new ClientHandler(conn, store));
+                }
+            } catch (SocketException ignored) {
+                // Normal: serverSocket.close() was called by the shutdown hook.
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }, "redismc-acceptor");
+        acceptor.setDaemon(true);
+        acceptor.start();
 
-        // --- multiple hash keys in same namespace ----------------------------
-        players.hset("alex", "score", 8100);
-        players.hset("alex", "rank",  "master");
+        System.out.println("redisMC listening on port " + DEFAULT_PORT);
 
-        players.hget("alex", "score").ifPresent(v -> System.out.println("alex.score   -> " + v)); // 8100
+        // Brief pause so the accept loop is definitely ready before the demo connects.
+        Thread.sleep(50);
+        runDemo();
 
-        // --- namespace isolation ---------------------------------------------
-        // "steve" under sessions is a completely separate hash key
-        sessions.hset("steve", "ip", "192.168.1.10");
-        sessions.hset("steve", "joined", "2026-03-17");
+        System.out.println("\nServer running. Press Ctrl+C to stop.");
+        acceptor.join(); // park main thread — server stays alive
+    }
 
-        sessions.hget("steve", "ip").ifPresent(v -> System.out.println("session.ip   -> " + v));     // 192.168.1.10
-        System.out.println("player.ip (should be empty) -> " + players.hget("steve", "ip")); // Optional.empty
+    // -------------------------------------------------------------------------
+    // Self-contained demo
+    // -------------------------------------------------------------------------
 
-        // --- hset field update preserves other fields and TTL ----------------
-        players.hset("steve", "score", 5000); // overwrite one field
-        players.hget("steve", "score").ifPresent(v -> System.out.println("steve.score updated -> " + v)); // 5000
-        players.hget("steve", "rank").ifPresent(v  -> System.out.println("steve.rank intact   -> " + v)); // diamond
+    /**
+     * Opens one raw TCP connection and exercises all seven commands, printing
+     * each request and the server's JSON response.
+     */
+    private static void runDemo() throws IOException {
+        System.out.println("\n=== Client Demo ===");
 
-        // --- TTL on a hash key -----------------------------------------------
-        // First hset creates the hash and sets a 2-second TTL on the whole key.
-        sessions.hset("alex", "ip", "10.0.0.5", 2, TimeUnit.SECONDS);
-        sessions.hset("alex", "joined", "2026-03-17"); // subsequent hset preserves TTL
+        try (Socket socket = new Socket("localhost", DEFAULT_PORT);
+             PrintWriter out = new PrintWriter(
+                     new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
+             BufferedReader in = new BufferedReader(
+                     new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))) {
 
-        System.out.println("\n[t=0s] session alex.ip     -> " + sessions.hget("alex", "ip"));     // Optional[10.0.0.5]
-        System.out.println("[t=0s] session alex.joined -> " + sessions.hget("alex", "joined"));  // Optional[2026-03-17]
+            // SET — store a string value
+            rpc(out, in, "{\"cmd\":\"SET\",\"namespace\":\"players\",\"key\":\"steve\",\"value\":\"hello\"}");
 
-        Thread.sleep(3_000);
+            // GET — retrieve it
+            rpc(out, in, "{\"cmd\":\"GET\",\"namespace\":\"players\",\"key\":\"steve\"}");
 
-        // Both fields gone — TTL expired the entire hash key
-        System.out.println("\n[t=3s] session alex.ip     -> " + sessions.hget("alex", "ip"));     // Optional.empty
-        System.out.println("[t=3s] session alex.joined -> " + sessions.hget("alex", "joined"));  // Optional.empty
+            // INCR — auto-initialises missing key to 0 then adds 500
+            rpc(out, in, "{\"cmd\":\"INCR\",\"namespace\":\"players\",\"key\":\"steve:score\",\"amount\":500}");
 
-        // player hashes are persistent — unaffected
-        System.out.println("[t=3s] player steve.score  -> " + players.hget("steve", "score"));   // Optional[5000]
+            // INCR again — accumulates
+            rpc(out, in, "{\"cmd\":\"INCR\",\"namespace\":\"players\",\"key\":\"steve:score\",\"amount\":250}");
 
-        store.shutdown();
+            // DECR — subtract from running total
+            rpc(out, in, "{\"cmd\":\"DECR\",\"namespace\":\"players\",\"key\":\"steve:score\",\"amount\":100}");
 
-        // TODO: parse config, bind network socket, start request loop
+            // HSET — write fields into a hash
+            rpc(out, in, "{\"cmd\":\"HSET\",\"namespace\":\"players\",\"key\":\"steve\",\"field\":\"rank\",\"value\":\"diamond\"}");
+            rpc(out, in, "{\"cmd\":\"HSET\",\"namespace\":\"players\",\"key\":\"steve\",\"field\":\"kills\",\"value\":\"37\"}");
+
+            // HGET — read individual fields back
+            rpc(out, in, "{\"cmd\":\"HGET\",\"namespace\":\"players\",\"key\":\"steve\",\"field\":\"rank\"}");
+            rpc(out, in, "{\"cmd\":\"HGET\",\"namespace\":\"players\",\"key\":\"steve\",\"field\":\"kills\"}");
+
+            // HGET on a missing field
+            rpc(out, in, "{\"cmd\":\"HGET\",\"namespace\":\"players\",\"key\":\"steve\",\"field\":\"unknown\"}");
+
+            // DELETE — remove the scalar key
+            rpc(out, in, "{\"cmd\":\"DELETE\",\"namespace\":\"players\",\"key\":\"steve\"}");
+
+            // GET after delete — returns null value
+            rpc(out, in, "{\"cmd\":\"GET\",\"namespace\":\"players\",\"key\":\"steve\"}");
+        }
+    }
+
+    private static void rpc(PrintWriter out, BufferedReader in, String request) throws IOException {
+        System.out.println("  >> " + request);
+        out.println(request);
+        System.out.println("  << " + in.readLine());
     }
 }
