@@ -23,11 +23,19 @@ public class ClientHandler implements Runnable {
 
     private final Socket socket;
     private final InMemoryStore store;
+    private final String requiredPassword; // null = no auth required
     private final ConcurrentHashMap<String, Namespace> namespaces = new ConcurrentHashMap<>();
+    private boolean authenticated;
 
     public ClientHandler(Socket socket, InMemoryStore store) {
+        this(socket, store, null);
+    }
+
+    public ClientHandler(Socket socket, InMemoryStore store, String password) {
         this.socket = socket;
         this.store = store;
+        this.requiredPassword = password;
+        this.authenticated = (password == null); // no password = auto-authenticated
     }
 
     @Override
@@ -52,6 +60,25 @@ public class ClientHandler implements Runnable {
     private String handleCommand(String json) {
         try {
             String cmd = extractString(json, "cmd");
+
+            // Handle AUTH before anything else
+            if ("AUTH".equalsIgnoreCase(cmd)) {
+                String password = extractString(json, "password");
+                if (requiredPassword == null) {
+                    authenticated = true;
+                    return "{\"status\":\"OK\",\"message\":\"No password required\"}";
+                }
+                if (requiredPassword.equals(password)) {
+                    authenticated = true;
+                    return "{\"status\":\"OK\"}";
+                }
+                return "{\"status\":\"ERROR\",\"message\":\"Invalid password\"}";
+            }
+
+            if (!authenticated) {
+                return "{\"status\":\"ERROR\",\"message\":\"Authentication required. Send AUTH command first.\"}";
+            }
+
             String ns = extractString(json, "namespace");
             String key = extractString(json, "key");
 

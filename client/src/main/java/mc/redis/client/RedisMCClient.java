@@ -39,7 +39,11 @@ public class RedisMCClient implements Closeable {
     private final AsyncRedisMCClient async;
 
     public RedisMCClient(String host, int port) throws IOException {
-        this.async = new AsyncRedisMCClient(host, port);
+        this(host, port, null);
+    }
+
+    public RedisMCClient(String host, int port, String password) throws IOException {
+        this.async = new AsyncRedisMCClient(host, port, password);
     }
 
     // -------------------------------------------------------------------------

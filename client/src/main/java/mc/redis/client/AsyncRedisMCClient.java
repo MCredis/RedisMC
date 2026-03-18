@@ -26,6 +26,10 @@ public class AsyncRedisMCClient implements Closeable {
     private final Object writeLock = new Object();
 
     public AsyncRedisMCClient(String host, int port) throws IOException {
+        this(host, port, null);
+    }
+
+    public AsyncRedisMCClient(String host, int port, String password) throws IOException {
         this.socket = new Socket(host, port);
         this.out = new PrintWriter(
                 new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true);
@@ -36,6 +40,19 @@ public class AsyncRedisMCClient implements Closeable {
             t.setDaemon(true);
             return t;
         });
+
+        if (password != null) {
+            authenticate(password);
+        }
+    }
+
+    private void authenticate(String password) throws IOException {
+        out.println("{\"cmd\":\"AUTH\",\"password\":\"" + esc(password) + "\"}");
+        String response = in.readLine();
+        if (response == null || response.contains("\"ERROR\"")) {
+            close();
+            throw new IOException("Authentication failed");
+        }
     }
 
     /** Returns a namespace-scoped view with both sync and async methods. */

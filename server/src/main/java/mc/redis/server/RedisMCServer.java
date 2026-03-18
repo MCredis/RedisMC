@@ -25,6 +25,15 @@ public class RedisMCServer {
     public static void main(String[] args) throws Exception {
         InMemoryStore store = new InMemoryStore();
 
+        // Authentication — set via -Dredismc.password=secret or REDISMC_PASSWORD env var
+        String password = System.getProperty("redismc.password",
+                System.getenv("REDISMC_PASSWORD"));
+        if (password != null) {
+            System.out.println("Authentication enabled (password required)");
+        } else {
+            System.out.println("Authentication disabled (no password set)");
+        }
+
         // Persistence — load previous snapshot and auto-save every 5 minutes
         Path snapshotPath = Path.of("redismc.snapshot");
         SnapshotPersistence persistence = new SnapshotPersistence(
@@ -39,6 +48,7 @@ public class RedisMCServer {
         });
 
         ServerSocket serverSocket = new ServerSocket(DEFAULT_PORT);
+        final String serverPassword = password;
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try { serverSocket.close(); } catch (IOException ignored) {}
@@ -53,7 +63,7 @@ public class RedisMCServer {
             try {
                 while (!serverSocket.isClosed()) {
                     Socket conn = serverSocket.accept();
-                    clientPool.submit(new ClientHandler(conn, store));
+                    clientPool.submit(new ClientHandler(conn, store, serverPassword));
                 }
             } catch (SocketException ignored) {
                 // Normal: serverSocket.close() was called by the shutdown hook.
