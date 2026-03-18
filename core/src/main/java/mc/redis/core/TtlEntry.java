@@ -23,6 +23,10 @@ class TtlEntry {
         return value;
     }
 
+    long getExpiresAt() {
+        return expiresAt;
+    }
+
     boolean isExpired() {
         return expiresAt != -1 && System.currentTimeMillis() >= expiresAt;
     }

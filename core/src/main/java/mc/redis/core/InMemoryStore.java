@@ -160,6 +160,18 @@ public class InMemoryStore implements KeyValueStore {
     }
 
     // -------------------------------------------------------------------------
+    // Snapshot (for persistence)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns a shallow copy of the current store contents for persistence.
+     * The returned map is a snapshot — mutations to it do not affect the store.
+     */
+    public java.util.Map<String, TtlEntry> snapshot() {
+        return new java.util.HashMap<>(store);
+    }
+
+    // -------------------------------------------------------------------------
     // Namespace factory
     // -------------------------------------------------------------------------
 

@@ -1,12 +1,15 @@
 package mc.redis.server;
 
 import mc.redis.core.InMemoryStore;
+import mc.redis.core.SnapshotPersistence;
 
 import java.io.*;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Entry point for the redisMC standalone server.
@@ -21,6 +24,14 @@ public class RedisMCServer {
 
     public static void main(String[] args) throws Exception {
         InMemoryStore store = new InMemoryStore();
+
+        // Persistence — load previous snapshot and auto-save every 5 minutes
+        Path snapshotPath = Path.of("redismc.snapshot");
+        SnapshotPersistence persistence = new SnapshotPersistence(
+                store, snapshotPath, 5, TimeUnit.MINUTES);
+        persistence.load();
+        System.out.println("Snapshot persistence enabled (" + snapshotPath + ")");
+
         ExecutorService clientPool = Executors.newCachedThreadPool(r -> {
             Thread t = new Thread(r, "redismc-client-handler");
             t.setDaemon(true);
@@ -32,6 +43,7 @@ public class RedisMCServer {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try { serverSocket.close(); } catch (IOException ignored) {}
             clientPool.shutdown();
+            persistence.shutdown();
             store.shutdown();
             System.out.println("redisMC stopped.");
         }, "redismc-shutdown"));
